@@ -19,6 +19,7 @@ let cloudProductsLoaded = false;
 let adminUser = null;
 let claimsUnsubscribe = null;
 let claimRows = [];
+let editingProductId = null;
 const cloud = window.DoubleHutchCloud || { ready: false };
 
 function money(n){ return '$' + Number(n || 0).toFixed(2); }
@@ -137,9 +138,11 @@ function ensureCloudUi(){
     admin.insertAdjacentHTML('beforeend', `<div id="adminCloudPanels" class="adminCloudPanels"><div class="panel"><div class="sectionhead"><div><h2 style="font-size:24px">Inventory</h2><p id="inventoryModeNote"></p></div><button class="linkbtn" onclick="openAddItem()">+ Add item</button></div><div id="adminInventory"></div></div><div class="panel"><div class="sectionhead"><div><h2 style="font-size:24px">Recent claims</h2></div></div><div id="adminClaims"><div class="empty">No claims yet.</div></div></div><button class="textbtn adminSignOut" onclick="logoutAdmin()">Sign out</button></div>`);
     document.querySelector('#admin .adminHeader .btn')?.setAttribute('onclick','openAddItem()');
     document.querySelector('#admin .taskgrid .panel:last-child .smallbtn')?.setAttribute('onclick','openAddItem()');
+    const attentionPanel = document.querySelector('#admin .taskgrid .panel:first-child');
+    if (attentionPanel) attentionPanel.innerHTML = `<div class="sectionhead" style="margin-bottom:5px"><div><h2 style="font-size:24px">Needs attention</h2></div><button class="linkbtn" onclick="scrollToRecentClaims()">View all</button></div><div id="needsAttention"><div class="empty">No pending claims.</div></div>`;
   }
   if (!document.getElementById('itemModal')){
-    document.body.insertAdjacentHTML('beforeend', `<div id="itemModal" class="cloudModal" aria-hidden="true"><div class="cloudModalCard"><button class="modalClose" onclick="closeAddItem()" aria-label="Close">×</button><div class="eyebrow">Inventory</div><h2>Add an item</h2><div class="formGrid"><div class="field"><label>Item name</label><input id="newItemName"></div><div class="field"><label>Price</label><input id="newItemPrice" type="number" min="0" step="0.01"></div><div class="field"><label>Category</label><select id="newItemCategory"><option>Handmade & Homegrown</option><option>Clothing</option><option>Everyday Items</option></select></div><div class="field"><label>Availability</label><select id="newItemStatus"><option>Available</option><option>Pending</option><option>Request</option><option>Sold</option></select></div><div class="field"><label>Fulfillment</label><select id="newItemFulfill"><option>Pickup or shipping</option><option>Local pickup</option><option>Shipping available</option></select></div><div class="field"><label>Image URL (optional)</label><input id="newItemImage" type="url" placeholder="https://…"></div></div><div class="field"><label>Description</label><textarea id="newItemDesc" rows="3"></textarea></div><p id="itemFormError" class="formError"></p><button class="btn sage block" onclick="saveNewItem()">Save item</button></div></div>`);
+    document.body.insertAdjacentHTML('beforeend', `<div id="itemModal" class="cloudModal" aria-hidden="true"><div class="cloudModalCard"><button class="modalClose" onclick="closeAddItem()" aria-label="Close">×</button><div class="eyebrow">Inventory</div><h2 id="itemModalTitle">Add an item</h2><div class="formGrid"><div class="field"><label>Item name</label><input id="newItemName"></div><div class="field"><label>Price</label><input id="newItemPrice" type="number" min="0" step="0.01"></div><div class="field"><label>Category</label><select id="newItemCategory"><option>Handmade & Homegrown</option><option>Clothing</option><option>Everyday Items</option></select></div><div class="field"><label>Availability</label><select id="newItemStatus"><option>Available</option><option>Pending</option><option>Request</option><option>Sold</option></select></div><div class="field"><label>Fulfillment</label><select id="newItemFulfill"><option>Pickup or shipping</option><option>Local pickup</option><option>Shipping available</option></select></div><div class="field"><label>Image URL (optional)</label><input id="newItemImage" type="url" placeholder="https://…"></div></div><div class="field"><label>Description</label><textarea id="newItemDesc" rows="3"></textarea></div><p id="itemFormError" class="formError"></p><button id="itemSaveButton" class="btn sage block" onclick="saveNewItem()">Save item</button></div></div>`);
   }
 }
 
@@ -157,28 +160,56 @@ async function loginAdmin(){
 }
 async function logoutAdmin(){ if (cloud.ready) await cloud.auth.signOut(); showView('home'); }
 
+function resetItemForm(){
+  document.querySelectorAll('#itemModal input,#itemModal textarea').forEach(el => el.value = '');
+  document.getElementById('newItemCategory').value = 'Handmade & Homegrown';
+  document.getElementById('newItemStatus').value = 'Available';
+  document.getElementById('newItemFulfill').value = 'Pickup or shipping';
+  document.getElementById('itemFormError').textContent = '';
+}
 function openAddItem(){
   if (!adminUser){ showAdminGate(); return; }
+  editingProductId = null; resetItemForm();
+  document.getElementById('itemModalTitle').textContent = 'Add an item';
+  document.getElementById('itemSaveButton').textContent = 'Save item';
   const modal = document.getElementById('itemModal'); modal.classList.add('open'); modal.setAttribute('aria-hidden','false');
 }
-function closeAddItem(){ const modal = document.getElementById('itemModal'); modal.classList.remove('open'); modal.setAttribute('aria-hidden','true'); }
+function openEditItem(id){
+  if (!adminUser) return;
+  const item = findItem(id); if (!item) return;
+  editingProductId = String(item.id);
+  document.getElementById('newItemName').value = item.name || '';
+  document.getElementById('newItemPrice').value = Number(item.price || 0);
+  document.getElementById('newItemCategory').value = item.cat || 'Everyday Items';
+  document.getElementById('newItemStatus').value = item.status || 'Available';
+  document.getElementById('newItemFulfill').value = item.fulfill || 'Pickup or shipping';
+  document.getElementById('newItemImage').value = item.imageUrl || '';
+  document.getElementById('newItemDesc').value = item.desc || '';
+  document.getElementById('itemFormError').textContent = '';
+  document.getElementById('itemModalTitle').textContent = 'Edit item';
+  document.getElementById('itemSaveButton').textContent = 'Save changes';
+  const modal = document.getElementById('itemModal'); modal.classList.add('open'); modal.setAttribute('aria-hidden','false');
+}
+function closeAddItem(){ editingProductId = null; const modal = document.getElementById('itemModal'); modal.classList.remove('open'); modal.setAttribute('aria-hidden','true'); }
 async function saveNewItem(){
   const name = clean(document.getElementById('newItemName').value);
   const price = Number(document.getElementById('newItemPrice').value);
   const errorBox = document.getElementById('itemFormError'); errorBox.textContent = '';
   if (name.length < 2 || !Number.isFinite(price) || price < 0){ errorBox.textContent = 'Add an item name and a valid price.'; return; }
   const cat = document.getElementById('newItemCategory').value;
+  const data = {
+    name,price,cat,type:cat === 'Clothing' ? 'clothing' : cat === 'Everyday Items' ? 'everyday' : 'crochet',
+    status:document.getElementById('newItemStatus').value,
+    fulfill:document.getElementById('newItemFulfill').value,
+    imageUrl:clean(document.getElementById('newItemImage').value),
+    desc:clean(document.getElementById('newItemDesc').value),
+    updatedAt:cloud.serverTimestamp()
+  };
+  const wasEditing = Boolean(editingProductId);
   try {
-    await cloud.db.collection('products').add({
-      name,price,cat,type:cat === 'Clothing' ? 'clothing' : cat === 'Everyday Items' ? 'everyday' : 'crochet',
-      status:document.getElementById('newItemStatus').value,
-      fulfill:document.getElementById('newItemFulfill').value,
-      imageUrl:clean(document.getElementById('newItemImage').value),
-      desc:clean(document.getElementById('newItemDesc').value),
-      createdAt:cloud.serverTimestamp(),updatedAt:cloud.serverTimestamp()
-    });
-    closeAddItem(); toast(`${name} added`);
-    document.querySelectorAll('#itemModal input,#itemModal textarea').forEach(el => el.value = '');
+    if (wasEditing) await cloud.db.collection('products').doc(editingProductId).update(data);
+    else await cloud.db.collection('products').add({...data,createdAt:cloud.serverTimestamp()});
+    closeAddItem(); toast(`${name} ${wasEditing ? 'updated' : 'added'}`); resetItemForm();
   } catch (error){ console.error(error); errorBox.textContent = 'The item could not be saved.'; }
 }
 async function deleteProduct(id){
@@ -201,13 +232,22 @@ function renderAdminInventory(){
   const box = document.getElementById('adminInventory');
   if (!box) return;
   document.getElementById('inventoryModeNote').innerHTML = cloudProductsLoaded ? 'Live Firebase inventory' : `Showing preview items. <button class="inlineAction" onclick="seedSampleProducts()">Add starter items to Firebase</button>`;
-  box.innerHTML = items.map(x => `<div class="adminItemRow"><div><strong>${escapeHtml(x.name)}</strong><small>${escapeHtml(x.status)} · ${money(x.price)} · ${escapeHtml(x.cat)}</small></div>${cloudProductsLoaded ? `<button class="textbtn" onclick="deleteProduct('${safeId(x.id)}')">Delete</button>` : ''}</div>`).join('');
+  box.innerHTML = items.map(x => `<div class="adminItemRow"><div><strong>${escapeHtml(x.name)}</strong><small>${escapeHtml(x.status)} · ${money(x.price)} · ${escapeHtml(x.cat)}</small></div>${cloudProductsLoaded ? `<div style="display:flex;gap:10px"><button class="linkbtn" onclick="openEditItem('${safeId(x.id)}')">Edit</button><button class="textbtn" onclick="deleteProduct('${safeId(x.id)}')">Delete</button></div>` : ''}</div>`).join('');
 }
+function renderNeedsAttention(){
+  const box = document.getElementById('needsAttention');
+  if (!box) return;
+  const pending = claimRows.filter(c => c.status === 'Pending');
+  if (!pending.length){ box.innerHTML = '<div class="empty">No pending claims.</div>'; return; }
+  box.innerHTML = pending.slice(0,3).map(c => `<div class="listrow"><span class="dot"></span><div class="grow"><strong>${escapeHtml(c.claimNumber || 'Claim')} · ${escapeHtml(c.name || '')}</strong><small>${escapeHtml(c.method || '')} · ${Array.isArray(c.items) ? c.items.length : 0} item(s) · ${money(c.subtotal)}</small></div><button class="smallbtn" style="width:auto;padding:0 12px" onclick="scrollToRecentClaims()">Open</button></div>`).join('');
+}
+function scrollToRecentClaims(){ document.getElementById('adminClaims')?.scrollIntoView({behavior:'smooth',block:'center'}); }
 function renderAdminClaims(){
   const box = document.getElementById('adminClaims');
   if (!box) return;
+  renderNeedsAttention();
   if (!claimRows.length){ box.innerHTML = '<div class="empty">No claims yet.</div>'; return; }
-  box.innerHTML = claimRows.slice(0,12).map(c => `<div class="adminItemRow"><div><strong>${escapeHtml(c.claimNumber || 'Claim')} · ${escapeHtml(c.name || '')}</strong><small>${escapeHtml(c.method || '')} · ${money(c.subtotal)} · ${escapeHtml(c.status || 'Pending')}</small></div><select class="miniSelect" onchange="updateClaimStatus('${safeId(c.id)}',this.value)"><option ${c.status==='Pending'?'selected':''}>Pending</option><option ${c.status==='Contacted'?'selected':''}>Contacted</option><option ${c.status==='Completed'?'selected':''}>Completed</option><option ${c.status==='Cancelled'?'selected':''}>Cancelled</option></select></div>`).join('');
+  box.innerHTML = claimRows.slice(0,12).map(c => `<div class="adminItemRow"><div><strong>${escapeHtml(c.claimNumber || 'Claim')} · ${escapeHtml(c.name || '')}</strong><small>${escapeHtml(c.email || '')} · ${escapeHtml(c.method || '')} · ${money(c.subtotal)}</small></div><select class="miniSelect" onchange="updateClaimStatus('${safeId(c.id)}',this.value)"><option ${c.status==='Pending'?'selected':''}>Pending</option><option ${c.status==='Contacted'?'selected':''}>Contacted</option><option ${c.status==='Completed'?'selected':''}>Completed</option><option ${c.status==='Cancelled'?'selected':''}>Cancelled</option></select></div>`).join('');
 }
 async function updateClaimStatus(id,status){ if (!adminUser) return; try { await cloud.db.collection('claims').doc(id).update({status,updatedAt:cloud.serverTimestamp()}); toast('Claim updated'); } catch(error){ console.error(error); toast('Claim could not be updated'); } }
 function updateAdminStats(){
@@ -221,7 +261,7 @@ function startClaimsListener(){
   if (claimsUnsubscribe) claimsUnsubscribe();
   claimsUnsubscribe = cloud.db.collection('claims').onSnapshot(snapshot => {
     claimRows = snapshot.docs.map(doc => ({id:doc.id,...doc.data()})).sort((a,b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-    renderAdminClaims(); updateAdminStats();
+    renderAdminClaims(); renderNeedsAttention(); updateAdminStats();
   }, error => console.error('Claims listener failed',error));
 }
 
